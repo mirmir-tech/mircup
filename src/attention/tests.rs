@@ -55,10 +55,25 @@ fn naive(
     output
 }
 
+/// Interleaves per-token query, key and value heads into one fused tensor.
+fn fused(parts: [&Tensor; 3]) -> Result<Tensor> {
+    let &[batch, length, heads, dimension] = parts[0].shape() else {
+        return Ok(Tensor::zeros(vec![0]));
+    };
+    let token = heads * dimension;
+    let mut data = Vec::with_capacity(3 * parts[0].data().len());
+    for index in 0..batch * length {
+        for part in parts {
+            data.extend_from_slice(&part.data()[index * token..(index + 1) * token]);
+        }
+    }
+    Tensor::new(vec![batch, length, 3 * token], data)
+}
+
 fn check(window: AttentionWindow, lengths: &[usize], length: usize) -> Result<()> {
     let shape = [lengths.len(), length, 3, 8];
     let (query, key, value) = (pattern(&shape, 1)?, pattern(&shape, 2)?, pattern(&shape, 3)?);
-    let actual = attention(&query, &key, &value, lengths, window)?;
+    let actual = attention(&fused([&query, &key, &value])?, 3, lengths, window)?;
     let expected = naive([&query, &key, &value], lengths, window);
     for (index, (actual, expected)) in actual.data().iter().zip(&expected).enumerate() {
         assert!((actual - expected).abs() < 1e-5, "{index}: {actual} != {expected}");
@@ -78,15 +93,15 @@ fn band_attention_matches_the_direct_formula_across_blocks() -> Result<()> {
 
 #[test]
 fn padded_query_rows_are_zero() -> Result<()> {
-    let shape = [1, 4, 1, 2];
-    let tensor = pattern(&shape, 1)?;
-    let output = attention(&tensor, &tensor, &tensor, &[2], AttentionWindow::Full)?;
+    let tensor = pattern(&[1, 4, 6], 1)?;
+    let output = attention(&tensor, 1, &[2], AttentionWindow::Full)?;
     assert!(output.data()[4..].iter().all(|value| *value == 0.0));
     Ok(())
 }
 
 #[test]
 fn rejects_lengths_beyond_the_padded_length() {
-    let tensor = Tensor::zeros(vec![1, 2, 1, 2]);
-    assert!(attention(&tensor, &tensor, &tensor, &[3], AttentionWindow::Full).is_err());
+    let tensor = Tensor::zeros(vec![1, 2, 6]);
+    assert!(attention(&tensor, 1, &[3], AttentionWindow::Full).is_err());
+    assert!(attention(&Tensor::zeros(vec![1, 2, 5]), 1, &[2], AttentionWindow::Full).is_err());
 }

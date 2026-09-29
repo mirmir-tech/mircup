@@ -36,13 +36,16 @@ impl Rope {
         self.cos.len() / (self.dimension / 2)
     }
 
-    /// Rotates a `[batch, length, heads, dimension]` tensor in place; token
-    /// `t` of every sequence uses position `t`.
-    pub fn apply(&self, tensor: &mut Tensor) -> Result<()> {
-        let &[_, length, heads, dimension] = tensor.shape() else {
+    /// Rotates, in place, the first `heads` heads of every token of a
+    /// `[batch, length, width]` tensor whose tokens are sequences of
+    /// `dimension`-wide heads; token `t` of every sequence uses position `t`.
+    /// A fused query-key-value projection rotates its query and key heads.
+    pub fn apply(&self, tensor: &mut Tensor, heads: usize) -> Result<()> {
+        let &[_, length, width] = tensor.shape() else {
             return Err(self.shape_error(tensor));
         };
-        if dimension != self.dimension {
+        let dimension = self.dimension;
+        if !width.is_multiple_of(dimension) || heads * dimension > width {
             return Err(self.shape_error(tensor));
         }
         if length > self.positions() {
@@ -52,15 +55,17 @@ impl Rope {
             });
         }
         let half = dimension / 2;
-        for (index, head) in tensor.data_mut().chunks_exact_mut(dimension).enumerate() {
-            let position = (index / heads) % length;
+        for (index, token) in tensor.data_mut().chunks_exact_mut(width).enumerate() {
+            let position = index % length;
             let cos = &self.cos[position * half..(position + 1) * half];
             let sin = &self.sin[position * half..(position + 1) * half];
-            let (first, second) = head.split_at_mut(half);
-            for index in 0..half {
-                let (x, y) = (first[index], second[index]);
-                first[index] = x.mul_add(cos[index], -(y * sin[index]));
-                second[index] = y.mul_add(cos[index], x * sin[index]);
+            for head in token[..heads * dimension].chunks_exact_mut(dimension) {
+                let (first, second) = head.split_at_mut(half);
+                for index in 0..half {
+                    let (x, y) = (first[index], second[index]);
+                    first[index] = x.mul_add(cos[index], -(y * sin[index]));
+                    second[index] = y.mul_add(cos[index], x * sin[index]);
+                }
             }
         }
         Ok(())
@@ -68,8 +73,8 @@ impl Rope {
 
     fn shape_error(&self, tensor: &Tensor) -> Error {
         Error::Shape {
-            operation: "rotary input [batch, length, heads, dimension]",
-            expected: vec![0, 0, 0, self.dimension],
+            operation: "rotary input [batch, length, heads × dimension]",
+            expected: vec![0, 0, self.dimension],
             actual: tensor.shape().to_vec(),
         }
     }
@@ -83,8 +88,8 @@ mod tests {
     #[test]
     fn leaves_position_zero_unchanged_and_rotates_later_positions() -> Result<()> {
         let rope = Rope::new(2, 10_000.0, 2)?;
-        let mut tensor = Tensor::new(vec![1, 2, 1, 2], vec![1.0, 2.0, 1.0, 0.0])?;
-        rope.apply(&mut tensor)?;
+        let mut tensor = Tensor::new(vec![1, 2, 2], vec![1.0, 2.0, 1.0, 0.0])?;
+        rope.apply(&mut tensor, 1)?;
         assert_eq!(&tensor.data()[..2], &[1.0, 2.0]);
         let (cos, sin) = (1.0_f32.cos(), 1.0_f32.sin());
         assert!((tensor.data()[2] - cos).abs() < 1e-6);
@@ -95,7 +100,17 @@ mod tests {
     #[test]
     fn rejects_sequences_longer_than_the_table() -> Result<()> {
         let rope = Rope::new(2, 10_000.0, 1)?;
-        assert!(rope.apply(&mut Tensor::zeros(vec![1, 2, 1, 2])).is_err());
+        assert!(rope.apply(&mut Tensor::zeros(vec![1, 2, 2]), 1).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn leaves_heads_past_the_rotated_ones_unchanged() -> Result<()> {
+        let rope = Rope::new(2, 10_000.0, 2)?;
+        let mut tensor = Tensor::new(vec![1, 2, 4], vec![1.0, 0.0, 5.0, 6.0, 1.0, 0.0, 5.0, 6.0])?;
+        rope.apply(&mut tensor, 1)?;
+        assert_eq!(&tensor.data()[6..], &[5.0, 6.0]);
+        assert!((tensor.data()[4] - 1.0_f32.cos()).abs() < 1e-6);
         Ok(())
     }
 }

@@ -1,10 +1,11 @@
 use super::AttentionWindow;
 use crate::{
-    linear::{Matrix, MatrixMut, Threads, multiply},
+    fastmath,
+    linear::{Matrix, MatrixMut, Threads, Write, multiply},
     numeric::float,
 };
 
-const QUERY_BLOCK: usize = 64;
+const QUERY_BLOCK: usize = 256;
 
 pub struct Geometry {
     pub length: usize,
@@ -14,7 +15,7 @@ pub struct Geometry {
 }
 
 /// One head of one sequence; each slice starts at token 0 of that head and
-/// keeps the `[length, heads, dimension]` interleaving.
+/// keeps the fused `[length, 3 × heads × dimension]` interleaving.
 pub struct HeadInput<'a> {
     pub query: &'a [f32],
     pub key: &'a [f32],
@@ -26,7 +27,7 @@ pub struct HeadInput<'a> {
 /// zero rows to `[length, dimension]`.
 pub fn head(geometry: &Geometry, input: &HeadInput<'_>) -> Vec<f32> {
     let dimension = geometry.dimension;
-    let stride = geometry.heads * dimension;
+    let stride = 3 * geometry.heads * dimension;
     let scale = 1.0 / float(dimension).sqrt();
     let mut output = vec![0.0; geometry.length * dimension];
     let mut first = 0;
@@ -45,11 +46,11 @@ pub fn head(geometry: &Geometry, input: &HeadInput<'_>) -> Vec<f32> {
             Matrix::strided(&input.query[first * stride..], queries, dimension, stride, 1),
             Matrix::strided(&input.key[key_first * stride..], dimension, keys, 1, stride),
             Threads::Caller,
+            Write::Overwrite,
         );
         for (row, weights) in scores.chunks_exact_mut(keys).enumerate() {
-            softmax_row(weights, scale, |column| {
-                allowed(geometry.window, first + row, key_first + column)
-            });
+            let (low, high) = key_range(geometry.window, first + row, input.valid);
+            softmax_row(weights, scale, low - key_first..high - key_first);
         }
         multiply(
             &mut MatrixMut::row_major(
@@ -60,40 +61,38 @@ pub fn head(geometry: &Geometry, input: &HeadInput<'_>) -> Vec<f32> {
             Matrix::row_major(&scores, queries, keys),
             Matrix::strided(&input.value[key_first * stride..], keys, dimension, stride, 1),
             Threads::Caller,
+            Write::Overwrite,
         );
         first = last;
     }
     output
 }
 
-const fn allowed(window: AttentionWindow, query: usize, key: usize) -> bool {
+/// Keys `[low, high)` a query may attend to; banded windows are contiguous.
+fn key_range(window: AttentionWindow, query: usize, valid: usize) -> (usize, usize) {
     match window {
-        AttentionWindow::Full => true,
-        AttentionWindow::Band { radius } => query.abs_diff(key) <= radius,
+        AttentionWindow::Full => (0, valid),
+        AttentionWindow::Band { radius } => {
+            (query.saturating_sub(radius), (query + radius + 1).min(valid))
+        },
     }
 }
 
-/// Replaces scaled scores by softmax weights; disallowed keys get weight 0.
-fn softmax_row(row: &mut [f32], scale: f32, allowed: impl Fn(usize) -> bool) {
-    let mut maximum = f32::NEG_INFINITY;
-    for (column, score) in row.iter_mut().enumerate() {
-        if allowed(column) {
-            *score *= scale;
-            maximum = maximum.max(*score);
-        } else {
-            *score = f32::NEG_INFINITY;
-        }
-    }
+/// Replaces scaled scores by softmax weights over `keys`; every other column
+/// gets weight 0.
+fn softmax_row(row: &mut [f32], scale: f32, keys: std::ops::Range<usize>) {
+    let (start, end) = (keys.start, keys.end);
+    row[..start].fill(0.0);
+    row[end..].fill(0.0);
+    let window = &mut row[start..end];
+    let maximum = window.iter().fold(f32::NEG_INFINITY, |maximum, &score| maximum.max(score));
     let mut total = 0.0;
-    for score in row.iter_mut() {
-        *score = if score.is_finite() {
-            (*score - maximum).exp()
-        } else {
-            0.0
-        };
+    for score in window.iter_mut() {
+        *score = fastmath::exp((*score - maximum) * scale);
         total += *score;
     }
-    for score in row.iter_mut() {
-        *score /= total;
+    let inverse = 1.0 / total;
+    for score in window.iter_mut() {
+        *score *= inverse;
     }
 }

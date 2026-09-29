@@ -1,6 +1,9 @@
 use rayon::prelude::*;
 
-use crate::{Error, Result, Tensor, numeric::double};
+use crate::{Error, Result, Tensor, numeric::float};
+
+/// Rows normalised by one Rayon task; single rows are too small to split.
+const ROWS_PER_TASK: usize = 32;
 
 /// Layer normalisation over the innermost dimension, with an optional bias.
 #[derive(Debug, Clone, PartialEq)]
@@ -41,28 +44,28 @@ impl LayerNorm {
         }
         tensor
             .data_mut()
-            .par_chunks_exact_mut(width)
-            .for_each(|row| self.normalize(row));
+            .par_chunks_mut(width * ROWS_PER_TASK)
+            .for_each(|rows| rows.chunks_exact_mut(width).for_each(|row| self.normalize(row)));
         Ok(())
     }
 
     fn normalize(&self, row: &mut [f32]) {
-        let count = double(row.len());
-        let mean = row.iter().map(|&value| f64::from(value)).sum::<f64>() / count;
-        let variance = row
-            .iter()
-            .map(|&value| {
-                let centered = f64::from(value) - mean;
-                centered * centered
-            })
-            .sum::<f64>()
-            / count;
-        let scale = 1.0 / (variance + f64::from(self.eps)).sqrt();
-        for (index, value) in row.iter_mut().enumerate() {
-            #[expect(clippy::cast_possible_truncation, reason = "activations are stored as f32")]
-            let normalized = ((f64::from(*value) - mean) * scale) as f32;
-            let shifted = self.bias.as_ref().map_or(0.0, |bias| bias[index]);
-            *value = normalized * self.weight[index] + shifted;
+        let inverse_count = 1.0 / float(row.len());
+        let mean = row.iter().sum::<f32>() * inverse_count;
+        let variance =
+            row.iter().map(|value| (value - mean) * (value - mean)).sum::<f32>() * inverse_count;
+        let scale = 1.0 / (variance + self.eps).sqrt();
+        match &self.bias {
+            Some(bias) => {
+                for ((value, weight), bias) in row.iter_mut().zip(&self.weight).zip(bias) {
+                    *value = ((*value - mean) * scale).mul_add(*weight, *bias);
+                }
+            },
+            None => {
+                for (value, weight) in row.iter_mut().zip(&self.weight) {
+                    *value = (*value - mean) * scale * weight;
+                }
+            },
         }
     }
 }

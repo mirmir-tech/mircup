@@ -8,13 +8,14 @@ mod activation;
 mod attention;
 mod embedding;
 mod error;
+mod fastmath;
 mod linear;
 mod norm;
 mod numeric;
 mod rope;
 mod tensor;
 
-pub use activation::{gelu, relu};
+pub use activation::{geglu, gelu, relu};
 pub use attention::{AttentionWindow, attention};
 pub use embedding::EmbeddingTable;
 pub use error::{Error, Result};

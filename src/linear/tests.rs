@@ -44,3 +44,12 @@ fn rejects_a_mismatched_input_width() -> Result<()> {
     assert!(linear.forward(&Tensor::zeros(vec![1, 2])).is_err());
     Ok(())
 }
+
+#[test]
+fn accumulates_into_an_existing_output() -> Result<()> {
+    let linear = Linear::new(Tensor::new(vec![1, 2], vec![1.0, 2.0])?, Some(vec![0.5]))?;
+    let mut output = Tensor::new(vec![2, 1], vec![10.0, 20.0])?;
+    linear.accumulate(&Tensor::new(vec![2, 2], vec![1.0, 1.0, 2.0, 0.0])?, &mut output)?;
+    assert_eq!(output.data(), &[13.5, 22.5]);
+    Ok(())
+}

@@ -1,6 +1,7 @@
+mod backend;
 mod gemm;
 
-pub use gemm::{Matrix, MatrixMut, Threads, multiply};
+pub use gemm::{Matrix, MatrixMut, Threads, Write, multiply};
 
 use crate::{Error, Result, Tensor};
 
@@ -44,34 +45,46 @@ impl Linear {
 
     /// Applies the map to every innermost row of `input`.
     pub fn forward(&self, input: &Tensor) -> Result<Tensor> {
+        let mut shape = input.shape().to_vec();
+        if let Some(last) = shape.last_mut() {
+            *last = self.outputs();
+        }
+        let mut output = Tensor::zeros(shape);
+        self.write(input, &mut output, Write::Overwrite)?;
+        Ok(output)
+    }
+
+    /// Adds the map of every row of `input` to the matching row of
+    /// `output`, as a residual connection does, without a temporary.
+    pub fn accumulate(&self, input: &Tensor, output: &mut Tensor) -> Result<()> {
+        self.write(input, output, Write::Accumulate)
+    }
+
+    fn write(&self, input: &Tensor, output: &mut Tensor, write: Write) -> Result<()> {
         let (inputs, outputs) = (self.inputs(), self.outputs());
-        if input.width() != inputs {
+        let rows = input.rows();
+        if input.width() != inputs || output.width() != outputs || output.rows() != rows {
             return Err(Error::Shape {
-                operation: "linear input",
-                expected: vec![inputs],
-                actual: input.shape().to_vec(),
+                operation: "linear input and output",
+                expected: vec![rows, inputs, outputs],
+                actual: [input.shape(), output.shape()].concat(),
             });
         }
-        let rows = input.rows();
-        let mut data = vec![0.0; rows * outputs];
         multiply(
-            &mut MatrixMut::row_major(&mut data, rows, outputs),
+            &mut MatrixMut::row_major(output.data_mut(), rows, outputs),
             Matrix::row_major(input.data(), rows, inputs),
             Matrix::transposed(self.weight.data(), inputs, outputs),
             Threads::Pool,
+            write,
         );
         if let Some(bias) = &self.bias {
-            for row in data.chunks_exact_mut(outputs) {
+            for row in output.data_mut().chunks_exact_mut(outputs) {
                 for (value, addend) in row.iter_mut().zip(bias) {
                     *value += addend;
                 }
             }
         }
-        let mut shape = input.shape().to_vec();
-        if let Some(last) = shape.last_mut() {
-            *last = outputs;
-        }
-        Tensor::new(shape, data)
+        Ok(())
     }
 }
 

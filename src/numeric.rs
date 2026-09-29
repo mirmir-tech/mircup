@@ -4,9 +4,3 @@
 pub const fn float(value: usize) -> f32 {
     value as f32
 }
-
-/// Converts a count to `f64`; counts stay far below 2^52.
-#[expect(clippy::cast_precision_loss, reason = "counts stay below 2^52")]
-pub const fn double(value: usize) -> f64 {
-    value as f64
-}

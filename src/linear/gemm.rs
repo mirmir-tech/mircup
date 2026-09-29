@@ -73,19 +73,79 @@ impl<'a> MatrixMut<'a> {
     }
 }
 
+/// Whether a product replaces the output or is added to it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Write {
+    Overwrite,
+    Accumulate,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum Threads {
-    /// Splits the product across the global Rayon pool.
+    /// Lets the product use every core.
     Pool,
     /// Runs on the calling thread, for callers that already parallelise.
     Caller,
 }
 
-/// Overwrites `output` with `left · right`.
+/// Layout of one operand as a BLAS routine reads it: row-major storage, or
+/// the transpose of row-major storage, with its leading dimension.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Operand {
+    RowMajor { leading: usize },
+    Transposed { leading: usize },
+}
+
+impl Matrix<'_> {
+    pub(super) fn operand(&self) -> Operand {
+        if self.column_stride == 1 {
+            Operand::RowMajor {
+                leading: self.row_stride.max(self.columns),
+            }
+        } else {
+            assert_eq!(self.row_stride, 1, "a BLAS operand needs one unit stride");
+            Operand::Transposed {
+                leading: self.column_stride.max(self.rows),
+            }
+        }
+    }
+
+    pub(super) const fn as_ptr(&self) -> *const f32 {
+        self.data.as_ptr()
+    }
+
+    pub(super) const fn columns(&self) -> usize {
+        self.columns
+    }
+
+    /// Row and column strides.
+    #[cfg(not(target_os = "macos"))]
+    pub(super) const fn strides(&self) -> (usize, usize) {
+        (self.row_stride, self.column_stride)
+    }
+}
+
+impl MatrixMut<'_> {
+    pub(super) const fn shape(&self) -> (usize, usize, usize) {
+        (self.rows, self.columns, self.row_stride)
+    }
+
+    pub(super) const fn as_mut_ptr(&mut self) -> *mut f32 {
+        self.data.as_mut_ptr()
+    }
+}
+
+/// Writes `left · right` into `output`, replacing or adding to it.
 ///
 /// Panics when the dimensions disagree or a view reaches beyond its buffer;
 /// both are programming errors of this crate, never of checkpoint data.
-pub fn multiply(output: &mut MatrixMut<'_>, left: Matrix<'_>, right: Matrix<'_>, threads: Threads) {
+pub fn multiply(
+    output: &mut MatrixMut<'_>,
+    left: Matrix<'_>,
+    right: Matrix<'_>,
+    threads: Threads,
+    write: Write,
+) {
     assert_eq!(left.rows, output.rows, "product rows disagree");
     assert_eq!(right.columns, output.columns, "product columns disagree");
     assert_eq!(left.columns, right.rows, "product inner dimensions disagree");
@@ -93,39 +153,5 @@ pub fn multiply(output: &mut MatrixMut<'_>, left: Matrix<'_>, right: Matrix<'_>,
     if output.rows == 0 || output.columns == 0 {
         return;
     }
-    let parallelism = match threads {
-        Threads::Pool => gemm::Parallelism::Rayon(0),
-        Threads::Caller => gemm::Parallelism::None,
-    };
-    // SAFETY: the assertions above prove every element addressed through the
-    // strides lies inside its slice. `output` is borrowed mutably, so it
-    // cannot alias `left` or `right`. With `read_dst == false` gemm never
-    // reads the destination, so the initial output values are irrelevant.
-    unsafe {
-        gemm::gemm(
-            output.rows,
-            output.columns,
-            left.columns,
-            output.data.as_mut_ptr(),
-            1,
-            to_isize(output.row_stride),
-            false,
-            left.data.as_ptr(),
-            to_isize(left.column_stride),
-            to_isize(left.row_stride),
-            right.data.as_ptr(),
-            to_isize(right.column_stride),
-            to_isize(right.row_stride),
-            0.0,
-            1.0,
-            false,
-            false,
-            false,
-            parallelism,
-        );
-    }
-}
-
-fn to_isize(stride: usize) -> isize {
-    isize::try_from(stride).unwrap_or_else(|_| unreachable!("a slice stride always fits isize"))
+    super::backend::multiply(output, &left, &right, threads, write);
 }

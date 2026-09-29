@@ -8,11 +8,13 @@ model, tokenizer, and application policy out of this crate.
 
 - dense row-major `f32` tensors decoded from `F32`, `F16`, and `BF16`
   checkpoint payloads;
-- multithreaded linear maps backed by `gemm` and Rayon;
+- linear maps backed by Apple Accelerate on macOS and by `gemm` with Rayon
+  elsewhere, including accumulation into a residual stream;
 - layer normalisation with and without bias;
-- exact GELU and ReLU;
+- GELU, fused GeGLU, and ReLU with vectorisable `exp` and `erf`;
 - rotate-half rotary position embeddings;
-- bidirectional attention with length masks and banded windows;
+- bidirectional attention over a fused query-key-value projection, with length
+  masks and banded windows;
 - token embedding tables that stay in their 16-bit encoding until read.
 
 ## Add it to a project

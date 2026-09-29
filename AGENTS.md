@@ -16,8 +16,14 @@ model, tokenizer, runtime, or server crates.
   precision for speed.
 - Shape and data mismatches caused by callers return typed `Error` values.
   Panics are reserved for internal invariants of this crate.
-- Keep every `unsafe` block inside `linear/gemm.rs` with a `SAFETY` comment
-  proving the strided views stay inside their slices.
+- Keep every `unsafe` block inside `linear/backend/` with a `SAFETY` comment
+  proving the strided views stay inside their slices. `linear/gemm.rs` checks
+  dimensions and bounds before any backend runs.
+- Matrix products use Apple Accelerate on macOS, which reaches the AMX units,
+  and the `gemm` crate elsewhere. Do not replace either without measuring
+  against the upstream PyTorch CPU runtime on the same machine.
+- `fastmath` holds vectorisable `exp` and `erf`; keep their error bounds
+  pinned by tests when changing them.
 - Use `thiserror` conversions and `?`.
 - Keep nightly rustfmt and clippy clean with all targets.
 - Do not add Python or PyTorch to any runtime or build path.

@@ -9,11 +9,13 @@ readme = "README.md"
 repository = "https://github.com/mirmir-tech/mircup"
 
 [dependencies]
-gemm = { version = "0.19", default-features = false, features = ["std", "rayon"] }
 half = "2"
 libm = "0.2"
 rayon = "1"
 thiserror = "2"
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+gemm = { version = "0.19", default-features = false, features = ["std", "rayon"] }
 
 [lints.rust]
 future_incompatible = { level = "deny", priority = -1 }

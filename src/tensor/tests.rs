@@ -45,10 +45,19 @@ fn adds_a_row_to_every_row() -> Result<()> {
 #[test]
 fn splits_and_gathers_rows() -> Result<()> {
     let tensor = Tensor::new(vec![2, 4], (0..8).map(float).collect())?;
-    let parts = tensor.split_last(2)?;
+    let parts = tensor.split_last::<2>()?;
     assert_eq!(parts[0].data(), &[0.0, 1.0, 4.0, 5.0]);
     assert_eq!(parts[1].data(), &[2.0, 3.0, 6.0, 7.0]);
     assert_eq!(tensor.gather_rows(&[1])?.data(), &[4.0, 5.0, 6.0, 7.0]);
     assert!(tensor.gather_rows(&[2]).is_err());
+    Ok(())
+}
+
+#[test]
+fn multiplies_element_wise() -> Result<()> {
+    let mut tensor = Tensor::new(vec![2], vec![2.0, 3.0])?;
+    tensor.mul_assign(&Tensor::new(vec![2], vec![4.0, -1.0])?)?;
+    assert_eq!(tensor.data(), &[8.0, -3.0]);
+    assert!(tensor.mul_assign(&Tensor::zeros(vec![3])).is_err());
     Ok(())
 }

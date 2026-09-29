@@ -81,6 +81,22 @@ impl Tensor {
         Ok(())
     }
 
+    /// Multiplies by `other` element-wise; both tensors must have the same
+    /// shape.
+    pub fn mul_assign(&mut self, other: &Self) -> Result<()> {
+        if self.shape != other.shape {
+            return Err(Error::Shape {
+                operation: "multiply",
+                expected: self.shape.clone(),
+                actual: other.shape.clone(),
+            });
+        }
+        for (value, factor) in self.data.iter_mut().zip(&other.data) {
+            *value *= factor;
+        }
+        Ok(())
+    }
+
     /// Adds `row` to every innermost row.
     pub fn add_row_assign(&mut self, row: &[f32]) -> Result<()> {
         if row.len() != self.width() {
@@ -117,29 +133,29 @@ impl Tensor {
         Self::new(vec![indices.len(), width], data)
     }
 
-    /// Splits the innermost dimension into equal consecutive parts.
-    pub fn split_last(&self, parts: usize) -> Result<Vec<Self>> {
+    /// Splits the innermost dimension into `N` equal consecutive parts.
+    pub fn split_last<const N: usize>(&self) -> Result<[Self; N]> {
         let width = self.width();
-        if parts == 0 || !width.is_multiple_of(parts) {
+        if N == 0 || !width.is_multiple_of(N) {
             return Err(Error::Shape {
                 operation: "split",
-                expected: vec![parts],
+                expected: vec![N],
                 actual: self.shape.clone(),
             });
         }
-        let part = width / parts;
+        let part = width / N;
         let mut shape = self.shape.clone();
         if let Some(last) = shape.last_mut() {
             *last = part;
         }
-        let mut outputs: Vec<Vec<f32>> =
-            (0..parts).map(|_| Vec::with_capacity(self.data.len() / parts)).collect();
+        let mut outputs: [Vec<f32>; N] =
+            std::array::from_fn(|_| Vec::with_capacity(self.data.len() / N));
         for row in self.data.chunks_exact(width) {
             for (output, values) in outputs.iter_mut().zip(row.chunks_exact(part)) {
                 output.extend_from_slice(values);
             }
         }
-        outputs.into_iter().map(|data| Self::new(shape.clone(), data)).collect()
+        Ok(outputs.map(|data| Self { shape: shape.clone(), data }))
     }
 }
 

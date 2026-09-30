@@ -16,7 +16,7 @@ mod rope;
 mod tensor;
 
 pub use activation::{geglu, gelu, relu};
-pub use attention::{AttentionWindow, attention};
+pub use attention::{AttentionWindow, attention, attention_at};
 pub use embedding::EmbeddingTable;
 pub use error::{Error, Result};
 pub use linear::Linear;

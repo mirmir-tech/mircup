@@ -28,45 +28,66 @@ impl LayerNorm {
     }
 
     pub fn forward(&self, input: &Tensor) -> Result<Tensor> {
-        let mut output = input.clone();
-        self.forward_in_place(&mut output)?;
+        let width = self.checked_width(input)?;
+        let mut output = Tensor::zeros(input.shape().to_vec());
+        output
+            .data_mut()
+            .par_chunks_mut(width * ROWS_PER_TASK)
+            .zip(input.data().par_chunks(width * ROWS_PER_TASK))
+            .for_each(|(outputs, inputs)| {
+                for (output, input) in
+                    outputs.chunks_exact_mut(width).zip(inputs.chunks_exact(width))
+                {
+                    let (mean, scale) = self.statistics(input);
+                    for (index, (value, &x)) in output.iter_mut().zip(input).enumerate() {
+                        *value = self.affine(index, (x - mean) * scale);
+                    }
+                }
+            });
         Ok(output)
     }
 
     pub fn forward_in_place(&self, tensor: &mut Tensor) -> Result<()> {
-        let width = self.weight.len();
-        if tensor.width() != width {
-            return Err(Error::Shape {
-                operation: "layer norm input",
-                expected: vec![width],
-                actual: tensor.shape().to_vec(),
-            });
-        }
-        tensor
-            .data_mut()
-            .par_chunks_mut(width * ROWS_PER_TASK)
-            .for_each(|rows| rows.chunks_exact_mut(width).for_each(|row| self.normalize(row)));
+        let width = self.checked_width(tensor)?;
+        tensor.data_mut().par_chunks_mut(width * ROWS_PER_TASK).for_each(|rows| {
+            for row in rows.chunks_exact_mut(width) {
+                let (mean, scale) = self.statistics(row);
+                for (index, value) in row.iter_mut().enumerate() {
+                    *value = self.affine(index, (*value - mean) * scale);
+                }
+            }
+        });
         Ok(())
     }
 
-    fn normalize(&self, row: &mut [f32]) {
+    fn checked_width(&self, tensor: &Tensor) -> Result<usize> {
+        let width = self.weight.len();
+        if tensor.width() == width {
+            Ok(width)
+        } else {
+            Err(Error::Shape {
+                operation: "layer norm input",
+                expected: vec![width],
+                actual: tensor.shape().to_vec(),
+            })
+        }
+    }
+
+    /// Mean and inverse standard deviation of one row.
+    fn statistics(&self, row: &[f32]) -> (f32, f32) {
         let inverse_count = 1.0 / float(row.len());
         let mean = row.iter().sum::<f32>() * inverse_count;
         let variance =
             row.iter().map(|value| (value - mean) * (value - mean)).sum::<f32>() * inverse_count;
-        let scale = 1.0 / (variance + self.eps).sqrt();
-        match &self.bias {
-            Some(bias) => {
-                for ((value, weight), bias) in row.iter_mut().zip(&self.weight).zip(bias) {
-                    *value = ((*value - mean) * scale).mul_add(*weight, *bias);
-                }
-            },
-            None => {
-                for (value, weight) in row.iter_mut().zip(&self.weight) {
-                    *value = (*value - mean) * scale * weight;
-                }
-            },
-        }
+        (mean, 1.0 / (variance + self.eps).sqrt())
+    }
+
+    #[inline]
+    fn affine(&self, index: usize, normalized: f32) -> f32 {
+        self.bias.as_ref().map_or_else(
+            || normalized * self.weight[index],
+            |bias| normalized.mul_add(self.weight[index], bias[index]),
+        )
     }
 }
 

@@ -1,4 +1,4 @@
-use crate::{AttentionWindow, Result, Tensor, attention, numeric::float};
+use crate::{AttentionWindow, Result, Tensor, attention, attention_at, numeric::float};
 
 fn pattern(shape: &[usize], seed: usize) -> Result<Tensor> {
     let count = shape.iter().product::<usize>();
@@ -104,4 +104,23 @@ fn rejects_lengths_beyond_the_padded_length() {
     let tensor = Tensor::zeros(vec![1, 2, 6]);
     assert!(attention(&tensor, 1, &[3], AttentionWindow::Full).is_err());
     assert!(attention(&Tensor::zeros(vec![1, 2, 5]), 1, &[2], AttentionWindow::Full).is_err());
+}
+
+#[test]
+fn selected_queries_match_the_full_attention_rows() -> Result<()> {
+    let shape = [2, 20, 3, 8];
+    let (query, key, value) = (pattern(&shape, 1)?, pattern(&shape, 2)?, pattern(&shape, 3)?);
+    let qkv = fused([&query, &key, &value])?;
+    for window in [AttentionWindow::Full, AttentionWindow::Band { radius: 3 }] {
+        let full = attention(&qkv, 3, &[20, 11], window)?;
+        let queries = vec![vec![0, 7, 19], vec![10, 2]];
+        let selected = attention_at(&qkv, 3, &[20, 11], window, &queries)?;
+        let expected: Vec<usize> = vec![0, 7, 19, 20 + 10, 20 + 2];
+        let reference = full.gather_rows(&expected)?;
+        for (selected, full) in selected.data().iter().zip(reference.data()) {
+            assert!((selected - full).abs() < 1e-6, "{selected} != {full}");
+        }
+    }
+    assert!(attention_at(&qkv, 3, &[20, 11], AttentionWindow::Full, &[vec![], vec![11]]).is_err());
+    Ok(())
 }

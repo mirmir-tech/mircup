@@ -68,6 +68,40 @@ pub fn head(geometry: &Geometry, input: &HeadInput<'_>) -> Vec<f32> {
     output
 }
 
+/// Returns `[queries.len(), dimension]` attention outputs of one head for
+/// the listed valid query tokens only, in the listed order.
+pub fn selected(geometry: &Geometry, input: &HeadInput<'_>, queries: &[usize]) -> Vec<f32> {
+    let dimension = geometry.dimension;
+    let stride = 3 * geometry.heads * dimension;
+    let scale = 1.0 / float(dimension).sqrt();
+    let mut gathered = Vec::with_capacity(queries.len() * dimension);
+    for &query in queries {
+        gathered.extend_from_slice(&input.query[query * stride..query * stride + dimension]);
+    }
+    let (count, keys) = (queries.len(), input.valid);
+    let mut scores = vec![0.0; count * keys];
+    multiply(
+        &mut MatrixMut::row_major(&mut scores, count, keys),
+        Matrix::row_major(&gathered, count, dimension),
+        Matrix::strided(input.key, dimension, keys, 1, stride),
+        Threads::Caller,
+        Write::Overwrite,
+    );
+    for (weights, &query) in scores.chunks_exact_mut(keys).zip(queries) {
+        let (low, high) = key_range(geometry.window, query, keys);
+        softmax_row(weights, scale, low..high);
+    }
+    let mut output = vec![0.0; count * dimension];
+    multiply(
+        &mut MatrixMut::row_major(&mut output, count, dimension),
+        Matrix::row_major(&scores, count, keys),
+        Matrix::strided(input.value, keys, dimension, stride, 1),
+        Threads::Caller,
+        Write::Overwrite,
+    );
+    output
+}
+
 /// Keys `[low, high)` a query may attend to; banded windows are contiguous.
 fn key_range(window: AttentionWindow, query: usize, valid: usize) -> (usize, usize) {
     match window {

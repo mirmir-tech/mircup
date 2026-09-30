@@ -90,6 +90,7 @@ pub enum Threads {
 
 /// Layout of one operand as a BLAS routine reads it: row-major storage, or
 /// the transpose of row-major storage, with its leading dimension.
+#[cfg(target_os = "macos")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Operand {
     RowMajor { leading: usize },
@@ -97,6 +98,7 @@ pub(super) enum Operand {
 }
 
 impl Matrix<'_> {
+    #[cfg(target_os = "macos")]
     pub(super) fn operand(&self) -> Operand {
         if self.column_stride == 1 {
             Operand::RowMajor {

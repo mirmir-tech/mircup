@@ -263,7 +263,7 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
 name = "mircup"
-version = "0.5.0"
+version = "0.5.2"
 dependencies = [
  "gemm",
  "half",
@@ -539,11 +539,11 @@ dependencies = [
 
 [[patch.unused]]
 name = "libmir"
-version = "0.4.0"
+version = "0.5.2"
 
 [[patch.unused]]
 name = "mircuda"
-version = "0.4.0"
+version = "0.5.2"
 
 [[patch.unused]]
 name = "mirtal"

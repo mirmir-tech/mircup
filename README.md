@@ -21,7 +21,7 @@ model, tokenizer, and application policy out of this crate.
 
 ```toml
 [dependencies]
-mircup = "0.5.5"
+mircup = "0.6.0"
 ```
 
 ## Checks
